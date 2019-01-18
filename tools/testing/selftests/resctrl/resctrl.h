@@ -63,10 +63,23 @@ struct resctrl_val_param {
 
 };
 
+/**
+ * Results of CPUID operation are stored in this structure.
+ * It consists of 4x32bits IA registers: EAX, EBX, ECX and EDX.
+ */
+struct cpuid_out {
+	uint32_t eax;
+	uint32_t ebx;
+	uint32_t ecx;
+	uint32_t edx;
+};
+
 pid_t bm_pid, ppid;
 extern char cbm_mask[256];
 extern unsigned long long_mask;
 extern char llc_occup_path[1024];
+extern int genuine_intel;
+extern int authentic_amd;
 
 int remount_resctrlfs(bool mum_resctrlfs);
 int get_resource_id(int cpu_no, int *resource_id);

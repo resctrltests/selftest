@@ -14,6 +14,66 @@
 #define BENCHMARK_ARGS		64
 #define BENCHMARK_ARG_SIZE	64
 
+/**
+ * This variables provides information about the vendor
+ */
+int genuine_intel;
+int authentic_amd;
+
+void lcpuid(const unsigned int leaf, const unsigned int subleaf,
+	    struct cpuid_out *out)
+{
+	if (!out)
+		return;
+
+#ifdef __x86_64__
+	asm volatile("mov %4, %%eax\n\t"
+		     "mov %5, %%ecx\n\t"
+		     "cpuid\n\t"
+		     "mov %%eax, %0\n\t"
+		     "mov %%ebx, %1\n\t"
+		     "mov %%ecx, %2\n\t"
+		     "mov %%edx, %3\n\t"
+		     : "=g" (out->eax), "=g" (out->ebx), "=g" (out->ecx),
+		     "=g" (out->edx)
+		     : "g" (leaf), "g" (subleaf)
+		     : "%eax", "%ebx", "%ecx", "%edx");
+#else
+	asm volatile("push %%ebx\n\t"
+		     "mov %4, %%eax\n\t"
+		     "mov %5, %%ecx\n\t"
+		     "cpuid\n\t"
+		     "mov %%eax, %0\n\t"
+		     "mov %%ebx, %1\n\t"
+		     "mov %%ecx, %2\n\t"
+		     "mov %%edx, %3\n\t"
+		     "pop %%ebx\n\t"
+		     : "=g" (out->eax), "=g" (out->ebx), "=g" (out->ecx),
+		     "=g" (out->edx)
+		     : "g" (leaf), "g" (subleaf)
+		     : "%eax", "%ecx", "%edx");
+#endif
+}
+
+int detect_vendor(void)
+{
+	struct cpuid_out vendor;
+	int ret = 0;
+
+	lcpuid(0x0, 0x0, &vendor);
+	if (vendor.ebx == 0x756e6547 && vendor.edx == 0x49656e69 &&
+	    vendor.ecx == 0x6c65746e) {
+		genuine_intel = 1;
+	} else if (vendor.ebx == 0x68747541 && vendor.edx == 0x69746E65 &&
+		   vendor.ecx ==   0x444D4163) {
+		authentic_amd = 1;
+	} else {
+		ret = -EFAULT;
+	}
+
+	return ret;
+}
+
 static void cmd_help(void)
 {
 	printf("usage: resctrl_tests [-h] [-b \"benchmark_cmd [options]\"] [-t test list] [-n no_of_bits]\n");
@@ -109,6 +169,9 @@ int main(int argc, char **argv)
 
 		return errno;
 	}
+
+	/* Detect vendor */
+	detect_vendor();
 
 	if (has_ben) {
 		/* Extract benchmark command from command line. */
