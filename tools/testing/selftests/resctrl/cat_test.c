@@ -69,7 +69,7 @@ static void show_cache_info(unsigned long sum_llc_perf_miss, int no_of_bits,
 	printf("Allocated cache lines: %lu \t", allocated_cache_lines);
 	printf("Percent diff=%d \t", abs((int)diff_percent));
 
-	if (abs((int)diff_percent) > MAX_DIFF_PERCENT)
+	if (genuine_intel && (abs((int)diff_percent) > MAX_DIFF_PERCENT))
 		printf("Failed\n");
 	else
 		printf("Passed\n");

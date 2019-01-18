@@ -197,7 +197,7 @@ int main(int argc, char **argv)
 	sprintf(bw_report, "reads");
 	sprintf(bm_type, "fill_buf");
 
-	if (mbm_test) {
+	if (genuine_intel && mbm_test) {
 		printf("\nMBM BW Change Starting..\n");
 		if (!has_ben)
 			sprintf(benchmark_cmd[5], "%s", "mbm");
@@ -207,7 +207,7 @@ int main(int argc, char **argv)
 		mbm_test_cleanup();
 	}
 
-	if (mba_test) {
+	if (genuine_intel && mba_test) {
 		printf("\nMBA Schemata Change Starting..\n");
 		if (!has_ben)
 			sprintf(benchmark_cmd[5], "%s", "mba");
