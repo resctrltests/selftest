@@ -68,6 +68,7 @@ int tests_run;
 char cbm_mask[256];
 unsigned long long_mask;
 char llc_occup_path[1024];
+bool is_amd;
 
 bool check_resctrlfs_support(void);
 int filter_dmesg(void);
