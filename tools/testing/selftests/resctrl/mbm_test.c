@@ -35,15 +35,13 @@ show_bw_info(unsigned long *bw_imc, unsigned long *bw_resc, int span)
 	avg_bw_resc = sum_bw_resc / 4;
 	avg_diff = avg_bw_resc - avg_bw_imc;
 
-	printf("\nSpan (MB): %d \t", span);
-	printf("avg_bw_imc: %lu\t", avg_bw_imc);
-	printf("avg_bw_resc: %lu\t", avg_bw_resc);
-	printf("avg_diff: %lu\t", labs(avg_diff));
-
-	if (labs(avg_diff) > MAX_DIFF)
-		printf(" failed\n");
-	else
-		printf(" passed\n");
+	printf("%sok MBM: diff within %d%%\n",
+	       labs(avg_diff) > MAX_DIFF ? "not " : "", MAX_DIFF);
+	tests_run++;
+	printf("# avg_diff: %lu\n", labs(avg_diff));
+	printf("# Span (MB): %d\n", span);
+	printf("# avg_bw_imc: %lu\n", avg_bw_imc);
+	printf("# avg_bw_resc: %lu\n", avg_bw_resc);
 }
 
 static int check_results(int span)
@@ -54,11 +52,9 @@ static int check_results(int span)
 	int runs;
 	FILE *fp;
 
-	printf("# Checking for pass/fail\n");
-
 	fp = fopen(output, "r");
 	if (!fp) {
-		perror("Error in opening file\n");
+		perror(output);
 
 		return errno;
 	}
