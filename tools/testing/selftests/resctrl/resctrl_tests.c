@@ -19,7 +19,7 @@ static void cmd_help(void)
 	printf("\t-b benchmark_cmd [options]: run specified benchmark for MBM, MBA and CQM");
 	printf("\t default benchmark is builtin fill_buf\n");
 	printf("\t-t test list: run tests specified in the test list, ");
-	printf("e.g. -t mbm, mba, cqm\n");
+	printf("e.g. -t mbm, mba, cqm, cat\n");
 	printf("\t-n no_of_bits: run cache tests using specified no of bits in cache bit mask\n");
 	printf("\t-p cpu_no: specify CPU number to run the test. 1 is default\n");
 	printf("\t-h: help\n");
@@ -30,6 +30,7 @@ void tests_cleanup(void)
 	mbm_test_cleanup();
 	mba_test_cleanup();
 	cqm_test_cleanup();
+	cat_test_cleanup();
 }
 
 int main(int argc, char **argv)
@@ -38,6 +39,7 @@ int main(int argc, char **argv)
 	int res, c, cpu_no = 1, span = 250, argc_new = argc, i, no_of_bits = 5;
 	int ben_ind, ben_count;
 	bool has_ben = false, mbm_test = true, mba_test = true, cqm_test = true;
+	bool cat_test = true;
 	char *benchmark_cmd[BENCHMARK_ARGS];
 	char bw_report[64], bm_type[64];
 
@@ -61,6 +63,7 @@ int main(int argc, char **argv)
 			mbm_test = false;
 			mba_test = false;
 			cqm_test = false;
+			cat_test = false;
 			while (token) {
 				if (!strcmp(token, "mbm")) {
 					mbm_test = true;
@@ -68,6 +71,8 @@ int main(int argc, char **argv)
 					mba_test = true;
 				} else if (!strcmp(token, "cqm")) {
 					cqm_test = true;
+				} else if (!strcmp(token, "cat")) {
+					cat_test = true;
 				} else {
 					printf("invalid argument\n");
 
@@ -158,6 +163,14 @@ int main(int argc, char **argv)
 		printf("%sok CQM: test\n", res ? "not " : "");
 		tests_run++;
 		cqm_test_cleanup();
+	}
+
+	if (cat_test) {
+		printf("# Starting CAT test ...\n");
+		res = cat_perf_miss_val(cpu_no, no_of_bits, "L3");
+		printf("%sok CAT: test\n", res ? "not " : "");
+		tests_run++;
+		cat_test_cleanup();
 	}
 
 	printf("1..%d\n", tests_run);
