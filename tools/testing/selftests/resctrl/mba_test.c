@@ -57,6 +57,7 @@ static void show_mba_info(unsigned long *bw_imc, unsigned long *bw_resc)
 {
 	int allocation, failed = 0, runs;
 
+	printf("\nResults are displayed in (MB)\n");
 	/* Memory bandwidth from 100% down to 10% */
 	for (allocation = 0; allocation < ALLOCATION_MAX / ALLOCATION_STEP;
 	     allocation++) {

@@ -36,6 +36,7 @@ show_bw_info(unsigned long *bw_imc, unsigned long *bw_resc, int span)
 	avg_bw_resc = sum_bw_resc / 4;
 	avg_diff = avg_bw_resc - avg_bw_imc;
 
+	printf("\nResults are displayed in (MB)\n");
 	printf("\nSpan (MB): %d \t", span);
 	printf("avg_bw_imc: %lu\t", avg_bw_imc);
 	printf("avg_bw_resc: %lu\t", avg_bw_resc);

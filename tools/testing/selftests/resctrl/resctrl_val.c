@@ -11,7 +11,6 @@
  */
 #include "resctrl.h"
 
-#define MB			(1024 * 1024)
 #define UNCORE_IMC		"uncore_imc"
 #define READ_FILE_NAME		"events/cas_count_read"
 #define WRITE_FILE_NAME		"events/cas_count_write"
@@ -32,6 +31,18 @@
 
 #define MBM_LOCAL_BYTES_PATH			\
 	"%s/mon_data/mon_L3_%02d/mbm_local_bytes"
+
+#define CON_MON_LCC_OCCUP_PATH		\
+	"%s/%s/mon_groups/%s/mon_data/mon_L3_%02d/llc_occupancy"
+
+#define CON_LCC_OCCUP_PATH		\
+	"%s/%s/mon_data/mon_L3_%02d/llc_occupancy"
+
+#define MON_LCC_OCCUP_PATH		\
+	"%s/mon_groups/%s/mon_data/mon_L3_%02d/llc_occupancy"
+
+#define LCC_OCCUP_PATH			\
+	"%s/mon_data/mon_L3_%02d/llc_occupancy"
 
 struct membw_read_format {
 	__u64 value;         /* The value of the event */
@@ -207,12 +218,12 @@ static int read_from_imc_dir(char *imc_dir, int count)
  * A config again has two parts, event and umask.
  * Enumerate all these details into an array of structures.
  *
- * Return: >= 0 on success. < 0 on failure.
+ * Return: > 0 on success. <= 0 on failure.
  */
 static int num_of_imcs(void)
 {
 	unsigned int count = 0;
-	char imc_dir[1024];
+	char imc_dir[512];
 	struct dirent *ep;
 	int ret;
 	DIR *dp;
@@ -434,16 +445,6 @@ static unsigned long get_mem_bw_resctrl(void)
 
 pid_t bm_pid, ppid;
 
-static void ctrlc_handler(int signum, siginfo_t *info, void *ptr)
-{
-	kill(bm_pid, SIGKILL);
-	umount_resctrlfs();
-	tests_cleanup();
-	printf("Ending\n\n");
-
-	exit(EXIT_SUCCESS);
-}
-
 /*
  * print_results_bw:	the memory bandwidth results are stored in a file
  * @filename:		file that stores the results
@@ -480,6 +481,42 @@ static int print_results_bw(char *filename,  int bm_pid, float bw_imc,
 	}
 
 	return 0;
+}
+
+static void set_cqm_path(const char *ctrlgrp, const char *mongrp, char sock_num)
+{
+	if (strlen(ctrlgrp) && strlen(mongrp))
+		sprintf(llc_occup_path,	CON_MON_LCC_OCCUP_PATH,	RESCTRL_PATH,
+			ctrlgrp, mongrp, sock_num);
+	else if (!strlen(ctrlgrp) && strlen(mongrp))
+		sprintf(llc_occup_path,	MON_LCC_OCCUP_PATH, RESCTRL_PATH,
+			mongrp, sock_num);
+	else if (strlen(ctrlgrp) && !strlen(mongrp))
+		sprintf(llc_occup_path,	CON_LCC_OCCUP_PATH, RESCTRL_PATH,
+			ctrlgrp, sock_num);
+	else if (!strlen(ctrlgrp) && !strlen(mongrp))
+		sprintf(llc_occup_path, LCC_OCCUP_PATH,	RESCTRL_PATH, sock_num);
+}
+
+/*
+ * initialize_llc_occu_resctrl:	Appropriately populate "llc_occup_path"
+ * @ctrlgrp:			Name of the control monitor group (con_mon grp)
+ * @mongrp:			Name of the monitor group (mon grp)
+ * @cpu_no:			CPU number that the benchmark PID is binded to
+ * @resctrl_val:		Resctrl feature (Eg: cat, cqm.. etc)
+ */
+static void initialize_llc_occu_resctrl(const char *ctrlgrp, const char *mongrp,
+					int cpu_no, char *resctrl_val)
+{
+	int resource_id;
+
+	if (get_resource_id(cpu_no, &resource_id) < 0) {
+		perror("Unable to resource_id");
+		return;
+	}
+
+	if (strcmp(resctrl_val, "cqm") == 0)
+		set_cqm_path(ctrlgrp, mongrp, resource_id);
 }
 
 static int
@@ -528,13 +565,9 @@ int resctrl_val(char **benchmark_cmd, struct resctrl_val_param *param)
 	unsigned long bw_resc_start = 0;
 	struct sigaction sigact;
 	union sigval value;
-	FILE *fp;
 
 	if (strcmp(param->filename, "") == 0)
 		sprintf(param->filename, "stdio");
-
-	if (strcmp(param->bw_report, "") == 0)
-		param->bw_report = "total";
 
 	if ((strcmp(resctrl_val, "mba")) == 0 ||
 	    (strcmp(resctrl_val, "mbm")) == 0) {
@@ -552,21 +585,6 @@ int resctrl_val(char **benchmark_cmd, struct resctrl_val_param *param)
 	 * kill parent, so save parent's pid
 	 */
 	ppid = getpid();
-
-	/* File based synchronization between parent and child */
-	fp = fopen("sig", "w");
-	if (!fp) {
-		perror("Failed to open sig file");
-
-		return -1;
-	}
-	if (fprintf(fp, "%d\n", 0) <= 0) {
-		perror("Unable to establish sync bw parent & child");
-		fclose(fp);
-
-		return -1;
-	}
-	fclose(fp);
 
 	if (pipe(pipefd)) {
 		perror("Unable to create pipe");
@@ -649,7 +667,9 @@ int resctrl_val(char **benchmark_cmd, struct resctrl_val_param *param)
 
 		initialize_mem_bw_resctrl(param->ctrlgrp, param->mongrp,
 					  param->cpu_no, resctrl_val);
-	}
+	} else if (strcmp(resctrl_val, "cqm") == 0)
+		initialize_llc_occu_resctrl(param->ctrlgrp, param->mongrp,
+					    param->cpu_no, resctrl_val);
 
 	/* Parent waits for child to be ready. */
 	close(pipefd[1]);
@@ -669,7 +689,8 @@ int resctrl_val(char **benchmark_cmd, struct resctrl_val_param *param)
 
 	/* Test runs until the callback setup() tells the test to stop. */
 	while (1) {
-		if (strcmp(resctrl_val, "mbm") == 0) {
+		if ((strcmp(resctrl_val, "mbm") == 0) ||
+		    (strcmp(resctrl_val, "mba") == 0)) {
 			ret = param->setup(1, param);
 			if (ret) {
 				ret = 0;
@@ -679,14 +700,14 @@ int resctrl_val(char **benchmark_cmd, struct resctrl_val_param *param)
 			ret = measure_vals(param, &bw_resc_start);
 			if (ret)
 				break;
-		} else if ((strcmp(resctrl_val, "mba") == 0)) {
+		} else if (strcmp(resctrl_val, "cqm") == 0) {
 			ret = param->setup(1, param);
 			if (ret) {
 				ret = 0;
 				break;
 			}
-
-			ret = measure_vals(param, &bw_resc_start);
+			sleep(1);
+			ret = measure_cache_vals(param, bm_pid);
 			if (ret)
 				break;
 		} else {

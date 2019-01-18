@@ -13,11 +13,17 @@
 
 #define RESCTRL_MBM		"L3 monitoring detected"
 #define RESCTRL_MBA		"MB allocation detected"
+#define RESCTRL_CQM		"L3 monitoring detected"
+#define CORE_SIBLINGS_PATH	"/sys/bus/cpu/devices/cpu"
+
 enum {
 	RESCTRL_FEATURE_MBM,
 	RESCTRL_FEATURE_MBA,
+	RESCTRL_FEATURE_CQM,
 	MAX_RESCTRL_FEATURES
 };
+
+char cbm_mask[256];
 
 /*
  * remount_resctrlfs - Remount resctrl FS at /sys/fs/resctrl
@@ -62,7 +68,7 @@ int remount_resctrlfs(bool mum_resctrlfs)
 
 				return errno;
 			}
-			printf("Remount: done!\n");
+			printf("umount: done!\n");
 		} else {
 			printf("Mounted already. Not remounting!\n");
 
@@ -122,6 +128,143 @@ int get_resource_id(int cpu_no, int *resource_id)
 }
 
 /*
+ * get_cache_size - Get cache size for a specified CPU
+ * @cpu_no:	CPU number
+ * @cache_type:	Cache level L2/L3
+ * @cache_size:	pointer to cache_size
+ *
+ * Return: = 0 on success, < 0 on failure.
+ */
+int get_cache_size(int cpu_no, char *cache_type, unsigned long *cache_size)
+{
+	char cache_path[1024], cache_str[64];
+	int length, i, cache_num;
+	FILE *fp;
+
+	if (!strcmp(cache_type, "L3")) {
+		cache_num = 3;
+	} else if (!strcmp(cache_type, "L2")) {
+		cache_num = 2;
+	} else {
+		perror("Invalid cache level");
+		return -1;
+	}
+
+	sprintf(cache_path, "/sys/bus/cpu/devices/cpu%d/cache/index%d/size",
+		cpu_no, cache_num);
+	fp = fopen(cache_path, "r");
+	if (!fp) {
+		perror("Failed to open cache size");
+
+		return -1;
+	}
+	if (fscanf(fp, "%s", cache_str) <= 0) {
+		perror("Could not get cache_size");
+		fclose(fp);
+
+		return -1;
+	}
+	fclose(fp);
+
+	length = (int)strlen(cache_str);
+
+	*cache_size = 0;
+
+	for (i = 0; i < length; i++) {
+		if ((cache_str[i] >= '0') && (cache_str[i] <= '9'))
+
+			*cache_size = *cache_size * 10 + (cache_str[i] - '0');
+
+		else if (cache_str[i] == 'K')
+
+			*cache_size = *cache_size * 1024;
+
+		else if (cache_str[i] == 'M')
+
+			*cache_size = *cache_size * 1024 * 1024;
+
+		else
+			break;
+	}
+
+	return 0;
+}
+
+/*
+ * get_cbm_mask - Get cbm mask for given cache
+ * @cache_type:	Cache level L2/L3
+ *
+ * Mask is stored in cbm_mask which is global variable.
+ *
+ * Return: = 0 on success, < 0 on failure.
+ */
+int get_cbm_mask(char *cache_type)
+{
+	char cbm_mask_path[1024];
+	FILE *fp;
+
+	sprintf(cbm_mask_path, "%s/%s/cbm_mask", CBM_MASK_PATH, cache_type);
+
+	fp = fopen(cbm_mask_path, "r");
+	if (!fp) {
+		perror("Failed to open cache level");
+
+		return -1;
+	}
+	if (fscanf(fp, "%s", cbm_mask) <= 0) {
+		perror("Could not get max cbm_mask");
+		fclose(fp);
+
+		return -1;
+	}
+	fclose(fp);
+
+	return 0;
+}
+
+/*
+ * get_core_sibling - Get sibling core id from the same socket for given CPU
+ * @cpu_no:	CPU number
+ *
+ * Return:	> 0 on success, < 0 on failure.
+ */
+int get_core_sibling(int cpu_no)
+{
+	char core_siblings_path[1024], cpu_list_str[64];
+	int sibling_cpu_no = -1;
+	FILE *fp;
+
+	sprintf(core_siblings_path, "%s%d/topology/core_siblings_list",
+		CORE_SIBLINGS_PATH, cpu_no);
+
+	fp = fopen(core_siblings_path, "r");
+	if (!fp) {
+		perror("Failed to open core siblings path");
+
+		return -1;
+	}
+	if (fscanf(fp, "%s", cpu_list_str) <= 0) {
+		perror("Could not get core_siblings list");
+		fclose(fp);
+
+		return -1;
+	}
+	fclose(fp);
+
+	char *token = strtok(cpu_list_str, "-,");
+
+	while (token) {
+		sibling_cpu_no = atoi(token);
+		/* Skipping core 0 as we don't want to run test on core 0 */
+		if (sibling_cpu_no != 0)
+			break;
+		token = strtok(NULL, "-,");
+	}
+
+	return sibling_cpu_no;
+}
+
+/*
  * taskset_benchmark - Taskset PID (i.e. benchmark) to a specified cpu
  * @bm_pid:	PID that should be binded
  * @cpu_no:	CPU number at which the PID would be binded
@@ -157,9 +300,10 @@ int taskset_benchmark(pid_t bm_pid, int cpu_no)
  */
 void run_benchmark(int signum, siginfo_t *info, void *ucontext)
 {
-	unsigned long long span;
-	int operation, ret;
+	int operation, ret, malloc_and_init_memory, memflush;
+	unsigned long long span, buffer_span;
 	char **benchmark_cmd;
+	char resctrl_val[64];
 	FILE *fp;
 
 	benchmark_cmd = info->si_ptr;
@@ -175,8 +319,18 @@ void run_benchmark(int signum, siginfo_t *info, void *ucontext)
 	if (strcmp(benchmark_cmd[0], "fill_buf") == 0) {
 		/* Execute default fill_buf benchmark */
 		span = strtoul(benchmark_cmd[1], NULL, 10);
+		malloc_and_init_memory = atoi(benchmark_cmd[2]);
+		memflush =  atoi(benchmark_cmd[3]);
 		operation = atoi(benchmark_cmd[4]);
-		if (run_fill_buf(span, 1, 1, operation, NULL))
+		sprintf(resctrl_val, "%s", benchmark_cmd[5]);
+
+		if (strcmp(resctrl_val, "cqm") != 0)
+			buffer_span = span * MB;
+		else
+			buffer_span = span;
+
+		if (run_fill_buf(buffer_span, malloc_and_init_memory, memflush,
+				 operation, resctrl_val))
 			fprintf(stderr, "Error in running fill buffer\n");
 	} else {
 		/* Execute specified benchmark */
@@ -202,6 +356,14 @@ static int create_grp(const char *grp_name, char *grp, const char *parent_grp)
 	int found_grp = 0;
 	struct dirent *ep;
 	DIR *dp;
+
+	/*
+	 * At this point, we are guaranteed to have resctrl FS mounted and if
+	 * length of grp_name == 0, it means, user wants to use root con_mon
+	 * grp, so do nothing
+	 */
+	if (strlen(grp_name) == 0)
+		return 0;
 
 	/* Check if requested grp exists or not */
 	dp = opendir(parent_grp);
@@ -268,11 +430,11 @@ static int write_pid_to_tasks(char *tasks, pid_t pid)
 int write_bm_pid_to_resctrl(pid_t bm_pid, char *ctrlgrp, char *mongrp,
 			    char *resctrl_val)
 {
-	char controlgroup[256], monitorgroup[256], monitorgroup_p[256];
-	char tasks[256];
+	char controlgroup[128], monitorgroup[512], monitorgroup_p[256];
+	char tasks[1024];
 	int ret;
 
-	if (ctrlgrp)
+	if (strlen(ctrlgrp))
 		sprintf(controlgroup, "%s/%s", RESCTRL_PATH, ctrlgrp);
 	else
 		sprintf(controlgroup, "%s", RESCTRL_PATH);
@@ -286,9 +448,10 @@ int write_bm_pid_to_resctrl(pid_t bm_pid, char *ctrlgrp, char *mongrp,
 	if (ret)
 		return ret;
 
-	/* Create mon grp and write pid into it for "mbm" test */
-	if ((strcmp(resctrl_val, "mbm") == 0)) {
-		if (mongrp) {
+	/* Create mon grp and write pid into it for "mbm" and "cqm" test */
+	if ((strcmp(resctrl_val, "cqm") == 0) ||
+	    (strcmp(resctrl_val, "mbm") == 0)) {
+		if (strlen(mongrp)) {
 			sprintf(monitorgroup_p, "%s/mon_groups", controlgroup);
 			sprintf(monitorgroup, "%s/%s", monitorgroup_p, mongrp);
 			ret = create_grp(mongrp, monitorgroup, monitorgroup_p);
@@ -326,7 +489,8 @@ int write_schemata(char *ctrlgrp, char *schemata, int cpu_no, char *resctrl_val)
 	int resource_id;
 	FILE *fp;
 
-	if (strcmp(resctrl_val, "mba") == 0) {
+	if ((strcmp(resctrl_val, "mba") == 0) ||
+	    (strcmp(resctrl_val, "cqm") == 0)) {
 		if (!schemata) {
 			printf("Schemata empty, so not updating\n");
 
@@ -337,12 +501,18 @@ int write_schemata(char *ctrlgrp, char *schemata, int cpu_no, char *resctrl_val)
 			return -1;
 		}
 
-		if (ctrlgrp)
+		if (strlen(ctrlgrp) != 0)
 			sprintf(controlgroup, "%s/%s/schemata", RESCTRL_PATH,
 				ctrlgrp);
 		else
 			sprintf(controlgroup, "%s/schemata", RESCTRL_PATH);
-		sprintf(schema, "%s%d%c%s", "MB:", resource_id, '=', schemata);
+
+		if (!strcmp(resctrl_val, "cqm"))
+			sprintf(schema, "%s%d%c%s", "L3:", resource_id, '=',
+				schemata);
+		if (strcmp(resctrl_val, "mba") == 0)
+			sprintf(schema, "%s%d%c%s", "MB:", resource_id, '=',
+				schemata);
 
 		fp = fopen(controlgroup, "w");
 		if (!fp) {
@@ -359,7 +529,7 @@ int write_schemata(char *ctrlgrp, char *schemata, int cpu_no, char *resctrl_val)
 		}
 		fclose(fp);
 
-		printf("Write schemata to resctrl FS: done!\n");
+		printf("Write schemata with %s to resctrl FS: done!\n", schema);
 	}
 
 	return 0;
@@ -375,7 +545,7 @@ int validate_resctrl_feature_request(char *resctrl_val)
 {
 	int resctrl_features_supported[MAX_RESCTRL_FEATURES];
 	const char *resctrl_features_list[MAX_RESCTRL_FEATURES] = {
-			"mbm", "mba"};
+			"mbm", "mba", "cqm"};
 	int i, valid_resctrl_feature = -1;
 	char line[1024];
 	FILE *fp;
@@ -419,6 +589,9 @@ int validate_resctrl_feature_request(char *resctrl_val)
 			resctrl_features_supported[RESCTRL_FEATURE_MBM] = 1;
 		if ((strstr(line, RESCTRL_MBA)) != NULL)
 			resctrl_features_supported[RESCTRL_FEATURE_MBA] = 1;
+		if ((strstr(line, RESCTRL_CQM)) != NULL)
+			resctrl_features_supported[RESCTRL_FEATURE_CQM] = 1;
+
 	}
 	fclose(fp);
 
@@ -427,7 +600,7 @@ int validate_resctrl_feature_request(char *resctrl_val)
 
 	/* Is the resctrl feature request supported? */
 	if (!resctrl_features_supported[valid_resctrl_feature]) {
-		fprintf(stderr, "resctrl feature not supported!");
+		fprintf(stderr, "resctrl feature not supported!\n");
 
 		return -1;
 	}
@@ -461,4 +634,26 @@ int perf_event_open(struct perf_event_attr *hw_event, pid_t pid, int cpu,
 	ret = syscall(__NR_perf_event_open, hw_event, pid, cpu,
 		      group_fd, flags);
 	return ret;
+}
+
+void ctrlc_handler(int signum, siginfo_t *info, void *ptr)
+{
+	kill(bm_pid, SIGKILL);
+	umount_resctrlfs();
+	tests_cleanup();
+	printf("Ending\n\n");
+
+	exit(EXIT_SUCCESS);
+}
+
+unsigned int count_bits(unsigned long n)
+{
+	unsigned int count = 0;
+
+	while (n) {
+		count += n & 1;
+		n >>= 1;
+	}
+
+	return count;
 }
